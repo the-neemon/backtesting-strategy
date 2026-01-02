@@ -33,10 +33,8 @@ def load_data(uploaded_file):
         # --- 1. FILE LOADING ---
         if filename.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
-            
         elif filename.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file, engine='openpyxl')
-            
         elif filename.endswith('.xls'):
             try:
                 df = pd.read_excel(uploaded_file, engine='xlrd')
@@ -61,16 +59,12 @@ def load_data(uploaded_file):
         # --- 3. ROBUST DATE PARSING ---
         if 'Date' in df.columns:
             df['Date'] = df['Date'].astype(str).str.strip()
-            
-            # Try MCX Format: "30 Apr 2021"
             try:
                 df['Date'] = pd.to_datetime(df['Date'], format='%d %b %Y', errors='raise')
             except ValueError:
-                # Fallback
                 df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
             
             df = df.dropna(subset=['Date'])
-            
             if df.empty:
                 st.error("All dates failed to parse.")
                 return None
@@ -91,7 +85,6 @@ def load_data(uploaded_file):
             st.error("No 'Expiry Date' column found!")
             return None
 
-        # Sort Oldest -> Newest
         df = df.sort_values('Date', ascending=True).reset_index(drop=True)
         return df
 
@@ -112,6 +105,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
     total_profit = 0
     cycle_count = 0
     next_entry_price = None
+    max_legs = len(lots) # Dynamic leg count
     
     progress_bar = st.progress(0)
     
@@ -188,8 +182,8 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 cycle_res = {'end_idx': original_idx, 'pnl': pnl, 'reason': status, 'exit_price': exit_p}
                 break
                 
-            # NEXT LEGS
-            if current_leg < 4:
+            # NEXT LEGS (Dynamic Check)
+            if current_leg < (max_legs - 1):
                 next_leg = current_leg + 1
                 gap_pct = gaps[next_leg]
                 gap_avg = get_ceiled_gap(avg_price, gap_pct)
@@ -199,9 +193,12 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 if low <= trigger:
                     buy_price = open_p if open_p < trigger else trigger
                     qty = lots[next_leg]
+                    
+                    # Update Avg Price
                     total_cost = (avg_price * total_lots) + (qty * buy_price)
                     total_lots += qty
                     avg_price = total_cost / total_lots
+                    
                     last_buy_day_close = close
                     current_leg += 1
                     
@@ -245,22 +242,34 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
 with st.sidebar:
     st.header("Configuration")
     
-    st.subheader("Position Sizing")
-    c1, c2 = st.columns(2)
-    l1 = c1.number_input("Leg 1 Lots", value=6)
-    l2 = c2.number_input("Leg 2 Lots", value=4)
-    l3 = c1.number_input("Leg 3 Lots", value=6)
-    l4 = c2.number_input("Leg 4 Lots", value=6)
-    l5 = c1.number_input("Leg 5 Lots", value=6)
+    # --- 1. Dynamic Legs Selection ---
+    num_legs = st.number_input("Number of Legs", min_value=1, max_value=20, value=5)
     
-    st.subheader("Gap Settings (%)")
-    g2 = st.number_input("Gap Leg 2 (%)", value=1.0, step=0.1)
-    g3 = st.number_input("Gap Leg 3 (%)", value=1.5, step=0.1)
-    g4 = st.number_input("Gap Leg 4 (%)", value=2.0, step=0.1)
-    g5 = st.number_input("Gap Leg 5 (%)", value=2.5, step=0.1)
-
-    lots = [l1, l2, l3, l4, l5]
-    gaps = [0, g2, g3, g4, g5]
+    lots = []
+    gaps = []
+    
+    st.subheader("Leg Settings")
+    
+    # Generate Inputs Loop
+    for i in range(num_legs):
+        c1, c2 = st.columns(2)
+        with c1:
+            # Default value logic: 6 for leg 1, then alternating 4/6 roughly based on user's old pattern
+            def_lot = 6
+            if i == 1: def_lot = 4
+            
+            l = st.number_input(f"Leg {i+1} Lots", value=def_lot, min_value=1, key=f"lot_{i}")
+            lots.append(l)
+            
+        with c2:
+            if i == 0:
+                st.caption("Gap: 0% (Start)")
+                gaps.append(0.0)
+            else:
+                # Default gap logic: 0.5% increments approx
+                def_gap = 1.0 + (0.5 * (i-1))
+                g = st.number_input(f"Gap Leg {i+1} (%)", value=def_gap, step=0.1, min_value=0.0, key=f"gap_{i}")
+                gaps.append(g)
 
 st.title("Jolly Gold 2 Strategy")
 st.write("Upload your Commodity Data (CSV, Excel) to begin.")
@@ -307,14 +316,14 @@ if uploaded_file is not None:
                 m4.metric("Avg Profit/Cycle", f"{avg_trade:,.2f}")
                 
                 # --- VISUALIZATION ---
+                # Calculate Cumulative PnL for table and chart
+                summary_df['Cumulative PnL'] = summary_df['Profit'].cumsum()
+                
                 if not is_single:
-                    summary_df['Cumulative PnL'] = summary_df['Profit'].cumsum()
-                    
-                    # CHART 1: EQUITY CURVE (With Red/Green Markers)
+                    # CHART 1: EQUITY CURVE
                     st.subheader("1. Equity Curve")
                     fig_eq = go.Figure()
                     
-                    # Main Line (Neutral Blue)
                     fig_eq.add_trace(go.Scatter(
                         x=summary_df['End Date'], 
                         y=summary_df['Cumulative PnL'],
@@ -323,7 +332,6 @@ if uploaded_file is not None:
                         line=dict(color='#1f77b4', width=3)
                     ))
                     
-                    # Markers (Green for >0, Red for <0)
                     marker_colors = ['#00CC96' if val >= 0 else '#EF553B' for val in summary_df['Cumulative PnL']]
                     fig_eq.add_trace(go.Scatter(
                         x=summary_df['End Date'],
@@ -333,15 +341,13 @@ if uploaded_file is not None:
                         marker=dict(size=10, color=marker_colors)
                     ))
                     
-                    # Zero Line
                     fig_eq.add_hline(y=0, line_dash="dash", line_color="gray")
                     fig_eq.update_layout(showlegend=False, xaxis_title="Date", yaxis_title="Cumulative PnL")
                     st.plotly_chart(fig_eq, use_container_width=True)
 
-                    # CHART 2: PROFIT PER CYCLE (Explicit Red/Green)
+                    # CHART 2: PROFIT PER CYCLE
                     st.subheader("2. Profit/Loss per Cycle")
                     fig_bar = go.Figure()
-                    
                     bar_colors = ['#00CC96' if val >= 0 else '#EF553B' for val in summary_df['Profit']]
                     
                     fig_bar.add_trace(go.Bar(
@@ -357,10 +363,19 @@ if uploaded_file is not None:
                 tab1, tab2 = st.tabs(["Cycle Summary", "Detailed Ledger"])
                 
                 with tab1:
-                    st.dataframe(summary_df.style.format({"Profit": "{:,.2f}"}), use_container_width=True)
+                    # Format Cumulative PnL to 2 decimals
+                    st.dataframe(summary_df.style.format({
+                        "Profit": "{:,.2f}", 
+                        "Cumulative PnL": "{:,.2f}"
+                    }), use_container_width=True)
                 
                 with tab2:
-                    st.dataframe(ledger_df.style.format({"Price": "{:,.2f}", "AvgPrice": "{:,.2f}", "Profit": "{:,.2f}"}), use_container_width=True)
+                    st.dataframe(ledger_df.style.format({
+                        "Price": "{:,.2f}", 
+                        "AvgPrice": "{:,.2f}", 
+                        "Profit": "{:,.2f}"
+                    }), use_container_width=True)
+                    
                     csv = ledger_df.to_csv(index=False).encode('utf-8')
                     st.download_button("Download Full Ledger CSV", data=csv, file_name="jolly_gold_results.csv", mime='text/csv')
             
