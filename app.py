@@ -31,53 +31,55 @@ def load_data(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
         
-        # --- 1. CSV HANDLING ---
+        # --- 1. FILE LOADING ---
         if filename.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
             
-        # --- 2. EXCEL HANDLING (.xlsx) ---
         elif filename.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file, engine='openpyxl')
             
-        # --- 3. EXCEL HANDLING (.xls) - CHECK FOR FAKE HTML XLS ---
         elif filename.endswith('.xls'):
             try:
-                # First try standard XLS reader
                 df = pd.read_excel(uploaded_file, engine='xlrd')
             except Exception:
-                # If that fails (BOF error), it's likely an HTML table saved as XLS
-                # Reset pointer to start of file
                 uploaded_file.seek(0)
-                # Read as HTML
                 tables = pd.read_html(uploaded_file)
                 if tables:
-                    df = tables[0] # Take the first table found
+                    df = tables[0]
                 else:
                     st.error("Could not find data in the HTML/XLS file.")
                     return None
         
-        # --- 4. CLEANING & FORMATTING ---
+        # --- 2. CLEANING COLUMNS ---
         # Standardize columns to Title Case (Open, High, Low...)
         df.columns = df.columns.str.title().str.strip()
         
-        # Identify Price Columns
+        # Identify Price Columns and convert to float
         cols_to_clean = ['Open', 'High', 'Low', 'Close']
         for col in cols_to_clean:
             if col in df.columns:
                 if df[col].dtype == 'object':
                     df[col] = df[col].apply(clean_numeric)
         
-        # Handle Date
+        # --- 3. ROBUST DATE PARSING (THE FIX) ---
         if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'])
+            # "coerce" turns invalid dates into NaT (Not a Time) so it doesn't crash
+            # "dayfirst=True" helps with formats like 01/02/2021 being Jan 2nd, not Feb 1st
+            df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+            
+            # Drop rows where Date failed to parse
+            df = df.dropna(subset=['Date'])
         else:
-            st.error("Column 'Date' not found. Please check CSV headers.")
+            st.error("Column 'Date' not found. Please check file headers.")
             return None
 
-        # Handle Expiry
+        # --- 4. ROBUST EXPIRY DATE PARSING ---
         expiry_col = [c for c in df.columns if 'Expiry' in c]
         if expiry_col:
-            df['Expiry Date'] = pd.to_datetime(df[expiry_col[0]])
+            col_name = expiry_col[0]
+            df['Expiry Date'] = pd.to_datetime(df[col_name], dayfirst=True, errors='coerce')
+             # Fill missing expiries or drop them if critical
+            df = df.dropna(subset=['Expiry Date'])
         else:
             st.error("No 'Expiry Date' column found in file!")
             return None
