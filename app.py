@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import math
 import plotly.graph_objects as go
+import io
 
 # ==========================================
 # 1. PAGE CONFIGURATION
@@ -17,7 +18,8 @@ st.set_page_config(
 
 def clean_numeric(val):
     if isinstance(val, str):
-        return float(val.replace(',', ''))
+        # Remove commas and handle messy strings
+        return float(val.replace(',', '').strip())
     return float(val)
 
 def get_ceiled_gap(price, percentage):
@@ -27,30 +29,52 @@ def get_ceiled_gap(price, percentage):
 @st.cache_data
 def load_data(uploaded_file):
     try:
-        # Explicitly define engines based on file extension
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith('.xlsx'):
-            df = pd.read_excel(uploaded_file, engine='openpyxl')
-        elif uploaded_file.name.endswith('.xls'):
-            df = pd.read_excel(uploaded_file, engine='xlrd')
-        else:
-            # Fallback for weird filenames
-            try:
-                df = pd.read_excel(uploaded_file, engine='openpyxl')
-            except:
-                df = pd.read_csv(uploaded_file)
-
-        df.columns = df.columns.str.title() 
+        filename = uploaded_file.name.lower()
         
+        # --- 1. CSV HANDLING ---
+        if filename.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+            
+        # --- 2. EXCEL HANDLING (.xlsx) ---
+        elif filename.endswith('.xlsx'):
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+            
+        # --- 3. EXCEL HANDLING (.xls) - CHECK FOR FAKE HTML XLS ---
+        elif filename.endswith('.xls'):
+            try:
+                # First try standard XLS reader
+                df = pd.read_excel(uploaded_file, engine='xlrd')
+            except Exception:
+                # If that fails (BOF error), it's likely an HTML table saved as XLS
+                # Reset pointer to start of file
+                uploaded_file.seek(0)
+                # Read as HTML
+                tables = pd.read_html(uploaded_file)
+                if tables:
+                    df = tables[0] # Take the first table found
+                else:
+                    st.error("Could not find data in the HTML/XLS file.")
+                    return None
+        
+        # --- 4. CLEANING & FORMATTING ---
+        # Standardize columns to Title Case (Open, High, Low...)
+        df.columns = df.columns.str.title().str.strip()
+        
+        # Identify Price Columns
         cols_to_clean = ['Open', 'High', 'Low', 'Close']
         for col in cols_to_clean:
             if col in df.columns:
                 if df[col].dtype == 'object':
                     df[col] = df[col].apply(clean_numeric)
         
-        df['Date'] = pd.to_datetime(df['Date'])
-        
+        # Handle Date
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+        else:
+            st.error("Column 'Date' not found. Please check CSV headers.")
+            return None
+
+        # Handle Expiry
         expiry_col = [c for c in df.columns if 'Expiry' in c]
         if expiry_col:
             df['Expiry Date'] = pd.to_datetime(df[expiry_col[0]])
@@ -58,8 +82,10 @@ def load_data(uploaded_file):
             st.error("No 'Expiry Date' column found in file!")
             return None
 
+        # Sort Oldest -> Newest
         df = df.sort_values('Date', ascending=True).reset_index(drop=True)
         return df
+
     except Exception as e:
         st.error(f"Error processing file: {e}")
         return None
@@ -84,13 +110,11 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
     progress_bar = st.progress(0)
     
     while True:
-        # Check Limits
         if current_idx >= len(df):
             break
         if not single_cycle_mode and df.iloc[current_idx]['Date'] > end_dt_obj:
             break
             
-        # --- CYCLE LOGIC ---
         subset = df.iloc[current_idx:].reset_index(drop=True)
         
         position_open = False
@@ -108,7 +132,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             expiry = row['Expiry Date']
             high, low, close, open_p = row['High'], row['Low'], row['Close'], row['Open']
 
-            # 1. ENTRY (Leg 1)
+            # ENTRY
             if not position_open:
                 if i == 0:
                     current_leg = 0
@@ -134,7 +158,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                     })
                 continue
             
-            # 2. EXIT (Target)
+            # TARGET EXIT
             target = avg_price * 1.01
             if high >= target:
                 pnl = (target - avg_price) * total_lots
@@ -146,7 +170,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 cycle_res = {'end_idx': original_idx, 'pnl': pnl, 'reason': 'Target Hit', 'exit_price': target}
                 break
                 
-            # 3. EXIT (Expiry)
+            # EXPIRY EXIT
             if date >= expiry:
                 exit_p = avg_price if high >= avg_price else close
                 status = "Expiry (NPNL)" if high >= avg_price else "Expiry (Loss)"
@@ -160,7 +184,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 cycle_res = {'end_idx': original_idx, 'pnl': pnl, 'reason': status, 'exit_price': exit_p}
                 break
                 
-            # 4. NEXT LEGS
+            # NEXT LEGS
             if current_leg < 4:
                 next_leg = current_leg + 1
                 gap_pct = gaps[next_leg]
@@ -183,7 +207,6 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                         'Profit': 0, 'Cycle': cycle_count + 1
                     })
 
-        # --- END OF CYCLE HANDLING ---
         grand_ledger.extend(cycle_ledger)
         
         if cycle_res:
