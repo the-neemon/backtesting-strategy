@@ -18,7 +18,6 @@ st.set_page_config(
 
 def clean_numeric(val):
     if isinstance(val, str):
-        # Remove commas and handle messy strings
         return float(val.replace(',', '').strip())
     return float(val)
 
@@ -59,40 +58,37 @@ def load_data(uploaded_file):
                 if df[col].dtype == 'object':
                     df[col] = df[col].apply(clean_numeric)
         
-        # --- 3. FIX: SPECIFIC DATE PARSING FOR MCX FORMAT ---
+        # --- 3. ROBUST DATE PARSING ---
         if 'Date' in df.columns:
-            # Clean strings first
             df['Date'] = df['Date'].astype(str).str.strip()
             
-            # Try MCX Format first: "30 Apr 2021"
+            # Try MCX Format: "30 Apr 2021"
             try:
                 df['Date'] = pd.to_datetime(df['Date'], format='%d %b %Y', errors='raise')
             except ValueError:
-                # If that fails, try standard formats
+                # Fallback
                 df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
             
             df = df.dropna(subset=['Date'])
             
             if df.empty:
-                st.error("All dates failed to parse. Please check your Date column format.")
+                st.error("All dates failed to parse.")
                 return None
         else:
-            st.error("Column 'Date' not found. Please check file headers.")
+            st.error("Column 'Date' not found.")
             return None
 
         # --- 4. EXPIRY DATE PARSING ---
         expiry_col = [c for c in df.columns if 'Expiry' in c]
         if expiry_col:
             col_name = expiry_col[0]
-            # Try MCX Expiry Format: "05May2021"
             try:
                 df['Expiry Date'] = pd.to_datetime(df[col_name], format='%d%b%Y', errors='raise')
             except ValueError:
                  df['Expiry Date'] = pd.to_datetime(df[col_name], dayfirst=True, errors='coerce')
-                 
             df = df.dropna(subset=['Expiry Date'])
         else:
-            st.error("No 'Expiry Date' column found in file!")
+            st.error("No 'Expiry Date' column found!")
             return None
 
         # Sort Oldest -> Newest
@@ -104,8 +100,6 @@ def load_data(uploaded_file):
         return None
 
 def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False):
-    
-    # Find start index
     try:
         current_idx = df[df['Date'] >= pd.to_datetime(start_date)].index[0]
     except IndexError:
@@ -119,7 +113,6 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
     cycle_count = 0
     next_entry_price = None
     
-    # Progress Bar
     progress_bar = st.progress(0)
     
     while True:
@@ -133,7 +126,6 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
         position_open = False
         current_leg = 0
         total_lots = 0
-        total_cost = 0
         avg_price = 0
         last_buy_day_close = 0
         cycle_ledger = []
@@ -159,7 +151,6 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                         note = "Start High"
                     
                     total_lots = qty
-                    total_cost = qty * buy_price
                     avg_price = buy_price
                     last_buy_day_close = close
                     position_open = True
@@ -167,7 +158,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                     cycle_ledger.append({
                         'Date': date, 'Action': 'BUY', 'Leg': 'Leg 1', 'Qty': qty, 
                         'Price': buy_price, 'AvgPrice': avg_price, 'Status': note,
-                        'Profit': 0, 'Cycle': cycle_count + 1
+                        'Profit': 0
                     })
                 continue
             
@@ -178,7 +169,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 cycle_ledger.append({
                     'Date': date, 'Action': 'SELL', 'Leg': 'Target', 'Qty': total_lots, 
                     'Price': target, 'AvgPrice': avg_price, 'Status': 'Profit Exit',
-                    'Profit': pnl, 'Cycle': cycle_count + 1
+                    'Profit': pnl
                 })
                 cycle_res = {'end_idx': original_idx, 'pnl': pnl, 'reason': 'Target Hit', 'exit_price': target}
                 break
@@ -192,7 +183,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 cycle_ledger.append({
                     'Date': date, 'Action': 'SELL', 'Leg': 'Expiry', 'Qty': total_lots, 
                     'Price': exit_p, 'AvgPrice': avg_price, 'Status': status,
-                    'Profit': pnl, 'Cycle': cycle_count + 1
+                    'Profit': pnl
                 })
                 cycle_res = {'end_idx': original_idx, 'pnl': pnl, 'reason': status, 'exit_price': exit_p}
                 break
@@ -208,7 +199,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 if low <= trigger:
                     buy_price = open_p if open_p < trigger else trigger
                     qty = lots[next_leg]
-                    total_cost += qty * buy_price
+                    total_cost = (avg_price * total_lots) + (qty * buy_price)
                     total_lots += qty
                     avg_price = total_cost / total_lots
                     last_buy_day_close = close
@@ -217,7 +208,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                     cycle_ledger.append({
                         'Date': date, 'Action': 'BUY', 'Leg': f'Leg {current_leg+1}', 'Qty': qty, 
                         'Price': buy_price, 'AvgPrice': avg_price, 'Status': "Limit/Gap",
-                        'Profit': 0, 'Cycle': cycle_count + 1
+                        'Profit': 0
                     })
 
         grand_ledger.extend(cycle_ledger)
@@ -272,7 +263,7 @@ with st.sidebar:
     gaps = [0, g2, g3, g4, g5]
 
 st.title("Jolly Gold 2 Strategy")
-st.write("Upload your Commodity Data (CSV or Excel) to begin backtesting.")
+st.write("Upload your Commodity Data (CSV, Excel) to begin.")
 
 uploaded_file = st.file_uploader("Upload Data File", type=['csv', 'xlsx', 'xls'])
 
@@ -302,6 +293,8 @@ if uploaded_file is not None:
             if not summary_df.empty:
                 st.divider()
                 st.subheader("Results")
+                
+                # --- METRICS ---
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total Profit", f"{total_pnl:,.2f}")
                 m2.metric("Total Cycles", len(summary_df))
@@ -313,20 +306,54 @@ if uploaded_file is not None:
                 avg_trade = total_pnl / len(summary_df)
                 m4.metric("Avg Profit/Cycle", f"{avg_trade:,.2f}")
                 
+                # --- VISUALIZATION ---
                 if not is_single:
-                    st.subheader("Cumulative Profit Curve")
                     summary_df['Cumulative PnL'] = summary_df['Profit'].cumsum()
                     
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
+                    # CHART 1: EQUITY CURVE (With Red/Green Markers)
+                    st.subheader("1. Equity Curve")
+                    fig_eq = go.Figure()
+                    
+                    # Main Line (Neutral Blue)
+                    fig_eq.add_trace(go.Scatter(
                         x=summary_df['End Date'], 
                         y=summary_df['Cumulative PnL'],
-                        mode='lines+markers',
+                        mode='lines',
                         name='Equity',
-                        line=dict(color='#00CC96', width=3)
+                        line=dict(color='#1f77b4', width=3)
                     ))
-                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Markers (Green for >0, Red for <0)
+                    marker_colors = ['#00CC96' if val >= 0 else '#EF553B' for val in summary_df['Cumulative PnL']]
+                    fig_eq.add_trace(go.Scatter(
+                        x=summary_df['End Date'],
+                        y=summary_df['Cumulative PnL'],
+                        mode='markers',
+                        name='Status',
+                        marker=dict(size=10, color=marker_colors)
+                    ))
+                    
+                    # Zero Line
+                    fig_eq.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_eq.update_layout(showlegend=False, xaxis_title="Date", yaxis_title="Cumulative PnL")
+                    st.plotly_chart(fig_eq, use_container_width=True)
+
+                    # CHART 2: PROFIT PER CYCLE (Explicit Red/Green)
+                    st.subheader("2. Profit/Loss per Cycle")
+                    fig_bar = go.Figure()
+                    
+                    bar_colors = ['#00CC96' if val >= 0 else '#EF553B' for val in summary_df['Profit']]
+                    
+                    fig_bar.add_trace(go.Bar(
+                        x=summary_df['Cycle'],
+                        y=summary_df['Profit'],
+                        marker_color=bar_colors,
+                        name="Cycle PnL"
+                    ))
+                    fig_bar.update_layout(xaxis_title="Cycle #", yaxis_title="Profit/Loss")
+                    st.plotly_chart(fig_bar, use_container_width=True)
                 
+                # --- DATA TABLES ---
                 tab1, tab2 = st.tabs(["Cycle Summary", "Detailed Ledger"])
                 
                 with tab1:
