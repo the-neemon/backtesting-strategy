@@ -27,7 +27,6 @@ def get_ceiled_gap(price, percentage):
 
 @st.cache_data
 def load_data(uploaded_files):
-    # Ensure input is a list for consistent looping
     if not isinstance(uploaded_files, list):
         uploaded_files = [uploaded_files]
         
@@ -40,16 +39,14 @@ def load_data(uploaded_files):
 
             # --- A. EXCEL HANDLING (MULTI-SHEET) ---
             if filename.endswith('.xlsx'):
-                # sheet_name=None reads ALL sheets as a dictionary
                 xls_data = pd.read_excel(uploaded_file, engine='openpyxl', sheet_name=None)
-                temp_dfs.extend(xls_data.values()) # Add all sheets to our list
+                temp_dfs.extend(xls_data.values()) 
 
             elif filename.endswith('.xls'):
                 try:
                     xls_data = pd.read_excel(uploaded_file, engine='xlrd', sheet_name=None)
                     temp_dfs.extend(xls_data.values())
                 except Exception:
-                    # Fallback for "Fake" XLS (HTML)
                     uploaded_file.seek(0)
                     tables = pd.read_html(uploaded_file)
                     temp_dfs.extend(tables)
@@ -60,8 +57,8 @@ def load_data(uploaded_files):
 
             # --- C. PRE-CLEAN & APPEND ---
             for df in temp_dfs:
-                # Standardize columns before merging
-                df.columns = df.columns.str.title().str.strip()
+                # FIX: Force columns to string before cleaning to prevent ".str accessor" error
+                df.columns = df.columns.astype(str).str.title().str.strip()
                 all_dfs.append(df)
 
         except Exception as e:
@@ -90,9 +87,6 @@ def load_data(uploaded_files):
         if 'Date' in full_df.columns:
             full_df['Date'] = full_df['Date'].astype(str).str.strip()
             
-            # 1. Try MCX Format (30 Apr 2021)
-            # 2. Try Standard (dayfirst=True)
-            # 3. Coerce errors to NaT
             full_df['Date'] = pd.to_datetime(full_df['Date'], format='%d %b %Y', errors='coerce') \
                               .fillna(pd.to_datetime(full_df['Date'], dayfirst=True, errors='coerce'))
             
@@ -294,7 +288,6 @@ with st.sidebar:
 st.title("Jolly Gold 2 Strategy")
 st.write("Upload your Commodity Data (CSV, Excel) to begin.")
 
-# UPDATED: accept_multiple_files=True allows drag & dropping many files
 uploaded_files = st.file_uploader("Upload Data File(s)", type=['csv', 'xlsx', 'xls'], accept_multiple_files=True)
 
 if uploaded_files:
@@ -336,7 +329,6 @@ if uploaded_files:
                 avg_trade = total_pnl / len(summary_df)
                 m4.metric("Avg Profit/Cycle", f"{avg_trade:,.2f}")
                 
-                # --- VISUALIZATION ---
                 summary_df['Cumulative PnL'] = summary_df['Profit'].cumsum()
                 
                 if not is_single:
@@ -377,7 +369,6 @@ if uploaded_files:
                     fig_bar.update_layout(xaxis_title="Cycle #", yaxis_title="Profit/Loss")
                     st.plotly_chart(fig_bar, use_container_width=True)
                 
-                # --- DATA TABLES ---
                 tab1, tab2 = st.tabs(["Cycle Summary", "Detailed Ledger"])
                 
                 with tab1:
