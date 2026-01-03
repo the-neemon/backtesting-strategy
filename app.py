@@ -116,9 +116,7 @@ def load_data(uploaded_files):
         return None
 
 def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False):
-    # Filter Date Range
     mask = (df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))
-    # Group by Date to handle multiple expiries per day
     daily_groups = {k: v for k, v in df[mask].groupby('Date')}
     unique_dates = sorted(daily_groups.keys())
     
@@ -128,6 +126,9 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
     cycle_count = 0
     next_entry_price = None
     max_legs = len(lots)
+    
+    # 10x Margin/Multiplier for GOLDM (100g lot / 10g quote)
+    MULTIPLIER = 10 
     
     position_open = False
     active_expiry = None
@@ -151,7 +152,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             offset_months = 2 if current_date.day <= 7 else 3
             target_date = current_date + relativedelta(months=offset_months)
             
-            # Find the contract matching Target Month & Year
+            # Find contract matching Target Month/Year
             matching_contract = todays_contracts[
                 (todays_contracts['Expiry Date'].dt.month == target_date.month) &
                 (todays_contracts['Expiry Date'].dt.year == target_date.year)
@@ -186,15 +187,14 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             continue
 
         # ==========================================
-        # 2. MANAGE POSITION (Only trade Locked Expiry)
+        # 2. MANAGE POSITION (Locked Expiry Only)
         # ==========================================
         else:
-            # Filter for the SPECIFIC locked expiry
             row_data = todays_contracts[todays_contracts['Expiry Date'] == active_expiry]
             
             if row_data.empty:
-                # Force close if contract expired/missing and date passed
                 if current_date > active_expiry:
+                     # Force Close
                      grand_ledger.extend(cycle_ledger)
                      cycle_count += 1
                      cycle_summaries.append({
@@ -218,7 +218,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             
             # CHECK EXIT: Target
             if high >= target:
-                pnl = (target - avg_price) * total_lots
+                pnl = (target - avg_price) * total_lots * MULTIPLIER
                 cycle_ledger.append({
                     'Date': current_date, 'Action': 'SELL', 'Leg': 'Target', 'Qty': total_lots, 
                     'Price': target, 'AvgPrice': avg_price, 'Status': 'Profit Exit',
@@ -230,7 +230,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             elif current_date >= active_expiry:
                 exit_p = avg_price if high >= avg_price else close
                 status = "Expiry (NPNL)" if high >= avg_price else "Expiry (Loss)"
-                pnl = (exit_p - avg_price) * total_lots
+                pnl = (exit_p - avg_price) * total_lots * MULTIPLIER
                 
                 cycle_ledger.append({
                     'Date': current_date, 'Action': 'SELL', 'Leg': 'Expiry', 'Qty': total_lots, 
@@ -287,14 +287,13 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
     
     progress_bar.empty()
     
-    # --- CONVERT TO DATAFRAMES ---
+    # --- CONVERT TO DATAFRAMES & CLEAN DATES ---
     ledger_df = pd.DataFrame(grand_ledger)
     summary_df = pd.DataFrame(cycle_summaries)
     
-    # --- FIX: REMOVE TIME COMPONENT FROM DATES ---
     if not ledger_df.empty:
+        # Remove time component from Ledger Dates
         ledger_df['Date'] = pd.to_datetime(ledger_df['Date']).dt.date
-        # Expiry Used is already .date() from the loop logic
     
     return ledger_df, summary_df, total_profit
 
