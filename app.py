@@ -78,7 +78,7 @@ def load_data(uploaded_files):
         if 'Date' in full_df.columns:
             full_df['Date'] = full_df['Date'].astype(str).str.strip()
             
-            # Priority 1: ISO Format (2025-10-03) - Prevents MM/DD mixups
+            # Priority 1: ISO Format (2025-10-03)
             iso_dates = pd.to_datetime(full_df['Date'], format='%Y-%m-%d', errors='coerce')
             
             # Priority 2: MCX Format (30 Apr 2021)
@@ -189,6 +189,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
         # 2. MANAGE POSITION (Only trade Locked Expiry)
         # ==========================================
         else:
+            # Filter for the SPECIFIC locked expiry
             row_data = todays_contracts[todays_contracts['Expiry Date'] == active_expiry]
             
             if row_data.empty:
@@ -283,9 +284,19 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
                 position_open = False
                 active_expiry = None
                 next_entry_price = cycle_res['exit_price'] + 5
-                
+    
     progress_bar.empty()
-    return pd.DataFrame(grand_ledger), pd.DataFrame(cycle_summaries), total_profit
+    
+    # --- CONVERT TO DATAFRAMES ---
+    ledger_df = pd.DataFrame(grand_ledger)
+    summary_df = pd.DataFrame(cycle_summaries)
+    
+    # --- FIX: REMOVE TIME COMPONENT FROM DATES ---
+    if not ledger_df.empty:
+        ledger_df['Date'] = pd.to_datetime(ledger_df['Date']).dt.date
+        # Expiry Used is already .date() from the loop logic
+    
+    return ledger_df, summary_df, total_profit
 
 # ==========================================
 # 3. FRONTEND UI LAYOUT
