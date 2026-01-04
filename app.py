@@ -78,10 +78,10 @@ def load_data(uploaded_files):
         if 'Date' in full_df.columns:
             full_df['Date'] = full_df['Date'].astype(str).str.strip()
             
-            # Priority 1: ISO Format (2025-10-03)
+            # Priority 1: ISO Format (e.g. 2025-10-03)
             iso_dates = pd.to_datetime(full_df['Date'], format='%Y-%m-%d', errors='coerce')
             
-            # Priority 2: Standard Format (30 Apr 2021)
+            # Priority 2: Standard Format (e.g. 30 Apr 2021)
             std_dates = pd.to_datetime(full_df['Date'], format='%d %b %Y', errors='coerce')
             
             # Priority 3: Standard Fallback
@@ -198,6 +198,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             if row_data.empty:
                 # Force close if contract expired/missing and date passed
                 if current_date > active_expiry:
+                     # Force Close
                      grand_ledger.extend(cycle_ledger)
                      cycle_count += 1
                      cycle_summaries.append({
@@ -399,20 +400,50 @@ if uploaded_files:
                     
                     fig_eq.add_hline(y=0, line_dash="dash", line_color="gray")
                     fig_eq.update_layout(showlegend=False, xaxis_title="Date", yaxis_title="Cumulative PnL")
-                    st.plotly_chart(fig_eq, use_container_width=True)
+                    
+                    # UPDATED CHART CONFIG
+                    st.plotly_chart(
+                        fig_eq, 
+                        use_container_width=True,
+                        config={
+                            'displayModeBar': True,
+                            'toImageButtonOptions': {
+                                'format': 'png', 
+                                'filename': 'equity_curve',
+                                'height': 600,
+                                'width': 1000,
+                                'scale': 1 
+                            }
+                        }
+                    )
 
                     st.subheader("2. Profit/Loss per Cycle")
                     fig_bar = go.Figure()
                     bar_colors = ['#00CC96' if val >= 0 else '#EF553B' for val in summary_df['Profit']]
                     
                     fig_bar.add_trace(go.Bar(
-                        x=summary_df['Cycle'],
+                        x=summary_df['End Date'], # X-axis is now Date
                         y=summary_df['Profit'],
                         marker_color=bar_colors,
                         name="Cycle PnL"
                     ))
-                    fig_bar.update_layout(xaxis_title="Cycle #", yaxis_title="Profit/Loss")
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    fig_bar.update_layout(xaxis_title="Date", yaxis_title="Profit/Loss")
+                    
+                    # UPDATED CHART CONFIG
+                    st.plotly_chart(
+                        fig_bar, 
+                        use_container_width=True,
+                        config={
+                            'displayModeBar': True,
+                            'toImageButtonOptions': {
+                                'format': 'png',
+                                'filename': 'cycle_pnl_barchart',
+                                'height': 600,
+                                'width': 1000,
+                                'scale': 1 
+                            }
+                        }
+                    )
                 
                 # --- DATA TABLES ---
                 tab1, tab2 = st.tabs(["Cycle Summary", "Detailed Ledger"])
