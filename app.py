@@ -79,10 +79,10 @@ def load_data(uploaded_files):
         if 'Date' in full_df.columns:
             full_df['Date'] = full_df['Date'].astype(str).str.strip()
             
-            # Priority 1: ISO Format (e.g. 2025-10-03)
+            # Priority 1: ISO Format (2025-10-03)
             iso_dates = pd.to_datetime(full_df['Date'], format='%Y-%m-%d', errors='coerce')
             
-            # Priority 2: Standard Format (e.g. 30 Apr 2021)
+            # Priority 2: Standard Format (30 Apr 2021)
             std_dates = pd.to_datetime(full_df['Date'], format='%d %b %Y', errors='coerce')
             
             # Priority 3: Standard Fallback
@@ -302,6 +302,12 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
     
     return ledger_df, summary_df, total_profit
 
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output.getvalue()
+
 # ==========================================
 # 3. FRONTEND UI LAYOUT
 # ==========================================
@@ -401,95 +407,35 @@ if uploaded_files:
                     
                     fig_eq.add_hline(y=0, line_dash="dash", line_color="gray")
                     fig_eq.update_layout(showlegend=False, xaxis_title="Date", yaxis_title="Cumulative PnL")
-                    
-                    st.plotly_chart(
-                        fig_eq, 
-                        use_container_width=True,
-                        config={
-                            'displayModeBar': True,
-                            'toImageButtonOptions': {
-                                'format': 'png', 
-                                'filename': 'equity_curve',
-                                'height': 600,
-                                'width': 1000,
-                                'scale': 1 
-                            }
-                        }
-                    )
+                    st.plotly_chart(fig_eq, use_container_width=True, config={'toImageButtonOptions': {'filename': 'equity_curve'}})
 
                     st.subheader("2. Profit/Loss per Cycle")
                     fig_bar = go.Figure()
                     bar_colors = ['#00CC96' if val >= 0 else '#EF553B' for val in summary_df['Profit']]
                     
-                    # UPDATED: Use 'Cycle' for X-axis
                     fig_bar.add_trace(go.Bar(
-                        x=summary_df['Cycle'], 
+                        x=summary_df['Cycle'],  # <--- REVERTED TO CYCLE NUMBER
                         y=summary_df['Profit'],
                         marker_color=bar_colors,
                         name="Cycle PnL"
                     ))
-                    
-                    # Ensure X-axis shows all cycle numbers as integers
-                    fig_bar.update_layout(
-                        xaxis_title="Cycle Number", 
-                        yaxis_title="Profit/Loss",
-                        xaxis=dict(dtick=1) # Force integer ticks
-                    )
-                    
-                    st.plotly_chart(
-                        fig_bar, 
-                        use_container_width=True,
-                        config={
-                            'displayModeBar': True,
-                            'toImageButtonOptions': {
-                                'format': 'png',
-                                'filename': 'cycle_pnl_barchart',
-                                'height': 600,
-                                'width': 1000,
-                                'scale': 1 
-                            }
-                        }
-                    )
+                    fig_bar.update_layout(xaxis_title="Cycle #", yaxis_title="Profit/Loss") # <--- REVERTED TITLE
+                    st.plotly_chart(fig_bar, use_container_width=True, config={'toImageButtonOptions': {'filename': 'profit_loss_cycles'}})
                 
                 # --- DATA TABLES ---
                 tab1, tab2 = st.tabs(["Cycle Summary", "Detailed Ledger"])
                 
                 with tab1:
-                    st.dataframe(summary_df.style.format({
-                        "Profit": "{:,.2f}", 
-                        "Cumulative PnL": "{:,.2f}"
-                    }), use_container_width=True)
-                    
-                    # UPDATED: Excel Download for Summary
-                    buffer_summ = io.BytesIO()
-                    with pd.ExcelWriter(buffer_summ, engine='xlsxwriter') as writer:
-                        summary_df.to_excel(writer, index=False, sheet_name='Cycle Summary')
-                        
-                    st.download_button(
-                        label="Download Cycle Summary (Excel)",
-                        data=buffer_summ.getvalue(),
-                        file_name="cycle_summary.xlsx",
-                        mime="application/vnd.ms-excel"
-                    )
+                    st.dataframe(summary_df.style.format({"Profit": "{:,.2f}", "Cumulative PnL": "{:,.2f}"}), use_container_width=True)
+                    if not summary_df.empty:
+                        data_xlsx = to_excel(summary_df)
+                        st.download_button(label="Download Cycle Summary (Excel)", data=data_xlsx, file_name="strategy_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                 
                 with tab2:
-                    st.dataframe(ledger_df.style.format({
-                        "Price": "{:,.2f}", 
-                        "AvgPrice": "{:,.2f}", 
-                        "Profit": "{:,.2f}"
-                    }), use_container_width=True)
-                    
-                    # UPDATED: Excel Download for Ledger
-                    buffer_ledg = io.BytesIO()
-                    with pd.ExcelWriter(buffer_ledg, engine='xlsxwriter') as writer:
-                        ledger_df.to_excel(writer, index=False, sheet_name='Detailed Ledger')
-
-                    st.download_button(
-                        label="Download Detailed Ledger (Excel)", 
-                        data=buffer_ledg.getvalue(), 
-                        file_name="detailed_ledger.xlsx", 
-                        mime='application/vnd.ms-excel'
-                    )
+                    st.dataframe(ledger_df.style.format({"Price": "{:,.2f}", "AvgPrice": "{:,.2f}", "Profit": "{:,.2f}"}), use_container_width=True)
+                    if not ledger_df.empty:
+                        data_xlsx = to_excel(ledger_df)
+                        st.download_button(label="Download Detailed Ledger (Excel)", data=data_xlsx, file_name="strategy_ledger.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             
             else:
                 st.warning("No cycles completed. This often happens if required expiry contracts are missing from the data.")
