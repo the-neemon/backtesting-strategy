@@ -115,7 +115,7 @@ def load_data(uploaded_files):
         st.error(f"Error processing data: {e}")
         return None
 
-def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False):
+def run_simulation(df, start_date, end_date, lots, gaps, target_pct, single_cycle_mode=False):
     # Filter Date Range
     mask = (df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))
     # Group by Date to handle multiple expiries per day
@@ -198,6 +198,7 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             if row_data.empty:
                 # Force close if contract expired/missing and date passed
                 if current_date > active_expiry:
+                     # Force Close
                      grand_ledger.extend(cycle_ledger)
                      cycle_count += 1
                      cycle_summaries.append({
@@ -217,7 +218,8 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
             high, low, close, open_p = row['High'], row['Low'], row['Close'], row['Open']
             cycle_res = None
 
-            target = avg_price * 1.01
+            # DYNAMIC TARGET CALCULATION
+            target = avg_price * (1 + (target_pct / 100))
             
             # CHECK EXIT: Target
             if high >= target:
@@ -307,12 +309,17 @@ def run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=False
 with st.sidebar:
     st.header("Configuration")
     
+    # --- EXIT SETTINGS ---
+    st.subheader("Exit Settings")
+    target_pct = st.number_input("Target Profit (%)", value=1.0, step=0.1, min_value=0.1)
+    
+    # --- LEG SETTINGS ---
+    st.subheader("Leg Settings")
     num_legs = st.number_input("Number of Legs", min_value=1, max_value=20, value=5)
     
     lots = []
     gaps = []
     
-    st.subheader("Leg Settings")
     for i in range(num_legs):
         c1, c2 = st.columns(2)
         with c1:
@@ -356,7 +363,7 @@ if uploaded_files:
         if st.button("Run Simulation", type="primary"):
             is_single = (mode == "Single Cycle")
             
-            ledger_df, summary_df, total_pnl = run_simulation(df, start_date, end_date, lots, gaps, single_cycle_mode=is_single)
+            ledger_df, summary_df, total_pnl = run_simulation(df, start_date, end_date, lots, gaps, target_pct, single_cycle_mode=is_single)
             
             if not summary_df.empty:
                 st.divider()
@@ -399,7 +406,7 @@ if uploaded_files:
                     
                     fig_eq.add_hline(y=0, line_dash="dash", line_color="gray")
                     fig_eq.update_layout(showlegend=False, xaxis_title="Date", yaxis_title="Cumulative PnL")
-                    st.plotly_chart(fig_eq, use_container_width=True)
+                    st.plotly_chart(fig_eq, use_container_width=True, config={'toImageButtonOptions': {'filename': 'equity_curve'}})
 
                     st.subheader("2. Profit/Loss per Cycle")
                     fig_bar = go.Figure()
@@ -412,26 +419,22 @@ if uploaded_files:
                         name="Cycle PnL"
                     ))
                     fig_bar.update_layout(xaxis_title="Cycle #", yaxis_title="Profit/Loss")
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    st.plotly_chart(fig_bar, use_container_width=True, config={'toImageButtonOptions': {'filename': 'profit_loss_cycles'}})
                 
                 # --- DATA TABLES ---
                 tab1, tab2 = st.tabs(["Cycle Summary", "Detailed Ledger"])
                 
                 with tab1:
-                    st.dataframe(summary_df.style.format({
-                        "Profit": "{:,.2f}", 
-                        "Cumulative PnL": "{:,.2f}"
-                    }), use_container_width=True)
+                    st.dataframe(summary_df.style.format({"Profit": "{:,.2f}", "Cumulative PnL": "{:,.2f}"}), use_container_width=True)
+                    if not summary_df.empty:
+                        csv = summary_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(label="Download Cycle Summary CSV", data=csv, file_name="strategy_summary.csv", mime="text/csv")
                 
                 with tab2:
-                    st.dataframe(ledger_df.style.format({
-                        "Price": "{:,.2f}", 
-                        "AvgPrice": "{:,.2f}", 
-                        "Profit": "{:,.2f}"
-                    }), use_container_width=True)
-                    
-                    csv = ledger_df.to_csv(index=False).encode('utf-8')
-                    st.download_button("Download Full Ledger CSV", data=csv, file_name="strategy_results.csv", mime='text/csv')
+                    st.dataframe(ledger_df.style.format({"Price": "{:,.2f}", "AvgPrice": "{:,.2f}", "Profit": "{:,.2f}"}), use_container_width=True)
+                    if not ledger_df.empty:
+                        csv = ledger_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(label="Download Detailed Ledger CSV", data=csv, file_name="strategy_ledger.csv", mime="text/csv")
             
             else:
                 st.warning("No cycles completed. This often happens if required expiry contracts are missing from the data.")
